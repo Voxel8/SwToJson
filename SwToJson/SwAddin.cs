@@ -124,7 +124,7 @@ namespace Voxel8SolidworksAddin {
 
             //Setup callbacks
             iSwApp.SetAddinCallbackInfo(0, this, addinID);
-            
+
             iSwApp.AddFileSaveAsItem2(cookie, "ExportToJSON", "Three.JS JSON Format", "json", (int)swDocumentTypes_e.swDocASSEMBLY);
             iSwApp.AddFileSaveAsItem2(cookie, "ExportToJSON", "Three.JS JSON Format", "json", (int)swDocumentTypes_e.swDocPART);
 
@@ -151,17 +151,22 @@ namespace Voxel8SolidworksAddin {
             var activeDoc = ((IModelDoc2)SwApp.ActiveDoc);
 
             var maxId = 0;
-            var partIDs = new Dictionary<Tuple<IModelDoc2, string>, int>();
+            var partIDs = new Dictionary<Tuple<object, string>, int>();
 
-            partIDs[new Tuple<IModelDoc2, string>(activeDoc, "")] = maxId++;
+
 
             if (activeDoc is IAssemblyDoc) {
-                foreach (Component2 component in (object[])((IAssemblyDoc)activeDoc).GetComponents(true)) {
+                partIDs[new Tuple<object, string>(activeDoc.ConfigurationManager.ActiveConfiguration.GetRootComponent3(true), activeDoc.ConfigurationManager.ActiveConfiguration.Name)] = maxId++;
+
+                foreach (Component2 component in (object[]) ((IAssemblyDoc) activeDoc).GetComponents(true)) {
                     AddIds(component, partIDs, ref maxId);
                 }
             }
+            else {
+                partIDs[new Tuple<object, string>(activeDoc, activeDoc.ConfigurationManager.ActiveConfiguration.Name)] = maxId++;
+            }
 
-            var modelDocList = new Tuple<IModelDoc2, string>[maxId];
+            var modelDocList = new Tuple<object, string>[maxId];
 
             foreach (var pair in partIDs)
                 modelDocList[pair.Value] = pair.Key;
@@ -175,32 +180,47 @@ namespace Voxel8SolidworksAddin {
 
                 if (partDoc != null) {
                     string oldConfiguration = null;
-                    if (modelDoc.Item2 != modelDoc.Item1.ConfigurationManager.ActiveConfiguration.Name) {
-                        oldConfiguration = modelDoc.Item1.ConfigurationManager.ActiveConfiguration.Name;
-                        modelDoc.Item1.ShowConfiguration2(modelDoc.Item2);
+                    if (modelDoc.Item2 != ((IModelDoc2) modelDoc.Item1).ConfigurationManager.ActiveConfiguration.Name) {
+                        oldConfiguration = ((IModelDoc2)modelDoc.Item1).ConfigurationManager.ActiveConfiguration.Name;
+                        ((IModelDoc2)modelDoc.Item1).ShowConfiguration2(modelDoc.Item2);
                     }
 
-                    var bodies = (object[]) partDoc.GetBodies2((int) swBodyType_e.swAllBodies, true);
+                    var bodies = (object[])partDoc.GetBodies2((int)swBodyType_e.swAllBodies, true);
                     if (bodies == null)
                         continue;
 
                     foreach (IBody2 body in bodies) {
-                        var tessellation = (ITessellation) body.GetTessellation(null);
+                        var tessellation = (ITessellation)body.GetTessellation(null);
                         tessellation.NeedEdgeFinMap = true;
                         tessellation.NeedFaceFacetMap = true;
                         tessellation.NeedVertexNormal = true;
                         tessellation.NeedVertexParams = false;
                         tessellation.ImprovedQuality = false;
-                        tessellation.CurveChordAngleTolerance = 0.3;
+                        tessellation.CurveChordAngleTolerance = 0.6;
                         tessellation.CurveChordTolerance = 1;
-                        tessellation.SurfacePlaneAngleTolerance = 0.3;
+                        tessellation.SurfacePlaneAngleTolerance = 0.6;
                         tessellation.SurfacePlaneTolerance = 1;
 
                         tessellation.Tessellate();
 
                         var bodyTessellation = new BodyTessellation();
 
-                        var bodyColorArray = (double[])body.MaterialPropertyValues2;
+                        double[] bodyColorArray = null;
+                        var features = (object[])body.GetFeatures();
+                        if (features != null) {
+                            foreach (IFeature feature in features.Reverse()) {
+                                bodyColorArray = (double[])feature.GetMaterialPropertyValues2((int)swInConfigurationOpts_e.swThisConfiguration, null);
+                                if (bodyColorArray[0] == -1) // All -1s are returned by features that don't assign color.
+                                    bodyColorArray = null; 
+
+                                if (bodyColorArray != null)
+                                    break;
+                            }
+                        }
+
+                        if (bodyColorArray == null)
+                            bodyColorArray = (double[])body.MaterialPropertyValues2;
+
                         if (bodyColorArray == null)
                             bodyColorArray = (double[])partDoc.MaterialPropertyValues;
 
@@ -210,29 +230,29 @@ namespace Voxel8SolidworksAddin {
 
                         var coloredFaces = new Dictionary<IFace2, long>();
                         var faceCount = 0;
-                        foreach (IFace2 face in (object[]) body.GetFaces()) {
+                        foreach (IFace2 face in (object[])body.GetFaces()) {
                             faceCount++;
-                            var colorArray = (double[]) face.MaterialPropertyValues;
+                            var colorArray = (double[])face.MaterialPropertyValues;
                             if (colorArray != null)
-                                coloredFaces[face] = ((long) (colorArray[0] * 255) << 16) |
-                                                     ((long) (colorArray[1] * 255) << 8) |
-                                                     ((long) (colorArray[2] * 255));
+                                coloredFaces[face] = ((long)(colorArray[0] * 255) << 16) |
+                                                     ((long)(colorArray[1] * 255) << 8) |
+                                                     ((long)(colorArray[2] * 255));
                         }
 
                         if (coloredFaces.Count < faceCount) {
                             for (var i = 0; i < tessellation.GetVertexCount(); i++) {
-                                bodyTessellation.VertexPositions.Add((double[]) tessellation.GetVertexPoint(i));
-                                bodyTessellation.VertexNormals.Add((double[]) tessellation.GetVertexNormal(i));
+                                bodyTessellation.VertexPositions.Add((double[])tessellation.GetVertexPoint(i));
+                                bodyTessellation.VertexNormals.Add((double[])tessellation.GetVertexNormal(i));
                             }
 
-                            foreach (IFace2 face in (object[]) body.GetFaces()) {
+                            foreach (IFace2 face in (object[])body.GetFaces()) {
                                 if (coloredFaces.ContainsKey(face))
                                     continue;
 
-                                foreach (var facet in (int[]) tessellation.GetFaceFacets(face)) {
+                                foreach (var facet in (int[])tessellation.GetFaceFacets(face)) {
                                     var vertexIndices = new List<int>();
-                                    foreach (var fin in (int[]) tessellation.GetFacetFins(facet)) {
-                                        vertexIndices.Add(((int[]) tessellation.GetFinVertices(fin))[0]);
+                                    foreach (var fin in (int[])tessellation.GetFacetFins(facet)) {
+                                        vertexIndices.Add(((int[])tessellation.GetFinVertices(fin))[0]);
                                     }
 
                                     bodyTessellation.Faces.Add(new FaceStruct {
@@ -278,7 +298,7 @@ namespace Voxel8SolidworksAddin {
 
                         totalTessellation.Meshes.Add(bodyTessellation);
 
-                        var edges = (object[]) body.GetEdges();
+                        var edges = (object[])body.GetEdges();
                         if (edges != null) {
                             foreach (var edge in edges) {
                                 var polyline = GetEdgePolyline(tessellation, edge);
@@ -288,25 +308,30 @@ namespace Voxel8SolidworksAddin {
                     }
 
                     if (oldConfiguration != null)
-                        modelDoc.Item1.ShowConfiguration2(oldConfiguration);
+                        ((IModelDoc2)modelDoc.Item1).ShowConfiguration2(oldConfiguration);
                 }
 
-                var assemblyDoc = modelDoc.Item1 as IAssemblyDoc;
+                var assemblyDoc = modelDoc.Item1 as IComponent2;
 
                 if (assemblyDoc != null) {
-                    foreach (Component2 component in (object[])assemblyDoc.GetComponents(true)) {
-                        if (component.IsSuppressed() || component.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
+                    foreach (Component2 component in (object[])assemblyDoc.GetChildren()) {
+                        if (component.IsHidden(true))
                             continue;
 
-                        var sourceDoc = (IModelDoc2)component.GetModelDoc2();
+                        var tuple = GetTuple(component);
 
                         int id;
-                        if (!partIDs.TryGetValue(new Tuple<IModelDoc2, string>(sourceDoc, component.ReferencedConfiguration), out id))
+                        if (!partIDs.TryGetValue(tuple, out id))
                             continue;
+
+                        var transformation = component.Transform2;
+
+                        if (assemblyDoc.Transform2 != null)
+                            transformation = (MathTransform) transformation.Multiply(assemblyDoc.Transform2.Inverse());
 
                         var threeJsComponent = new ThreeJsComponent {
                             Id = id,
-                            Transformation = component.Transform2
+                            Transformation = transformation
                         };
 
                         totalTessellation.Components.Add(threeJsComponent);
@@ -421,13 +446,22 @@ namespace Voxel8SolidworksAddin {
             return polyline;
         }
 
-        void AddIds(Component2 component, Dictionary<Tuple<IModelDoc2, string>, int> ids, ref int id) {
-            if (component.IsSuppressed() || component.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
+        Tuple<object, string> GetTuple(Component2 component) {
+            var modelDoc = (IModelDoc2)component.GetModelDoc2();
+
+            if (modelDoc is IAssemblyDoc)
+                return new Tuple<object, string>(component, component.ReferencedConfiguration);
+            return new Tuple<object, string>(modelDoc, component.ReferencedConfiguration);
+        }
+
+        void AddIds(Component2 component, Dictionary<Tuple<object, string>, int> ids, ref int id) {
+            if (component.IsHidden(true))
                 return;
 
             var modelDoc = (IModelDoc2)component.GetModelDoc2();
 
-            var tuple = new Tuple<IModelDoc2, string>(modelDoc, component.ReferencedConfiguration);
+            var tuple = GetTuple(component);
+            
             if (ids.ContainsKey(tuple))
                 return;
 
@@ -436,7 +470,7 @@ namespace Voxel8SolidworksAddin {
             var assembly = modelDoc as IAssemblyDoc;
 
             if (assembly != null) {
-                foreach (Component2 c in (object[])assembly.GetComponents(true)) {
+                foreach (Component2 c in (object[]) component.GetChildren()) {
                     AddIds(c, ids, ref id);
                 }
             }
@@ -571,13 +605,13 @@ namespace Voxel8SolidworksAddin {
                 writer.WritePropertyName("vertices");
                 writer.WriteStartArray();
                 foreach (var vertex in VertexPositions)
-                    writer.WriteRawValue(string.Format("{0:0.0###############},{1:0.0###############},{2:0.0###############}", vertex[0], vertex[1], vertex[2]));
+                    writer.WriteRawValue(string.Format("{0:0.0#######},{1:0.0#######},{2:0.0#######}", vertex[0], vertex[1], vertex[2]));
                 writer.WriteEndArray();
 
                 writer.WritePropertyName("normals");
                 writer.WriteStartArray();
                 foreach (var normal in VertexNormals)
-                    writer.WriteRawValue(string.Format("{0:0.0###############},{1:0.0###############},{2:0.0###############}", normal[0], normal[1], normal[2]));
+                    writer.WriteRawValue(string.Format("{0:0.0#######},{1:0.0#######},{2:0.0#######}", normal[0], normal[1], normal[2]));
                 writer.WriteEndArray();
 
                 writer.WritePropertyName("colors");

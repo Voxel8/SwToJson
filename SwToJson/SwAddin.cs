@@ -147,26 +147,28 @@ namespace Voxel8SolidworksAddin {
             return true;
         }
 
+        static long ColorArrayToColor(double[] colorArray) {
+            return ((long)(colorArray[0] * 255) << 16) | ((long)(colorArray[1] * 255) << 8) | ((long)(colorArray[2] * 255));
+        }
+
         public void ExportToJSON(string fileName) {
             var activeDoc = ((IModelDoc2)SwApp.ActiveDoc);
 
             var maxId = 0;
-            var partIDs = new Dictionary<Tuple<object, string>, int>();
-
-
+            var partIDs = new Dictionary<Tuple<object, string, long?>, int>();
 
             if (activeDoc is IAssemblyDoc) {
-                partIDs[new Tuple<object, string>(activeDoc.ConfigurationManager.ActiveConfiguration.GetRootComponent3(true), activeDoc.ConfigurationManager.ActiveConfiguration.Name)] = maxId++;
+                partIDs[new Tuple<object, string, long?>(activeDoc.ConfigurationManager.ActiveConfiguration.GetRootComponent3(true), activeDoc.ConfigurationManager.ActiveConfiguration.Name, null)] = maxId++;
 
                 foreach (Component2 component in (object[]) ((IAssemblyDoc) activeDoc).GetComponents(true)) {
                     AddIds(component, partIDs, ref maxId);
                 }
             }
             else {
-                partIDs[new Tuple<object, string>(activeDoc, activeDoc.ConfigurationManager.ActiveConfiguration.Name)] = maxId++;
+                partIDs[new Tuple<object, string, long?>(activeDoc, activeDoc.ConfigurationManager.ActiveConfiguration.Name, null)] = maxId++;
             }
 
-            var modelDocList = new Tuple<object, string>[maxId];
+            var modelDocList = new Tuple<object, string, long?>[maxId];
 
             foreach (var pair in partIDs)
                 modelDocList[pair.Value] = pair.Key;
@@ -186,123 +188,33 @@ namespace Voxel8SolidworksAddin {
                     }
 
                     var bodies = (object[])partDoc.GetBodies2((int)swBodyType_e.swAllBodies, true);
-                    if (bodies == null)
-                        continue;
+                    if (bodies != null) {
+                        foreach (IBody2 body in bodies) {
+                            var tessellation = (ITessellation) body.GetTessellation(null);
+                            tessellation.NeedEdgeFinMap = true;
+                            tessellation.NeedFaceFacetMap = true;
+                            tessellation.NeedVertexNormal = true;
+                            tessellation.NeedVertexParams = false;
+                            tessellation.ImprovedQuality = false;
+                            tessellation.CurveChordAngleTolerance = 0.6;
+                            tessellation.CurveChordTolerance = 1;
+                            tessellation.SurfacePlaneAngleTolerance = 0.6;
+                            tessellation.SurfacePlaneTolerance = 1;
 
-                    foreach (IBody2 body in bodies) {
-                        var tessellation = (ITessellation)body.GetTessellation(null);
-                        tessellation.NeedEdgeFinMap = true;
-                        tessellation.NeedFaceFacetMap = true;
-                        tessellation.NeedVertexNormal = true;
-                        tessellation.NeedVertexParams = false;
-                        tessellation.ImprovedQuality = false;
-                        tessellation.CurveChordAngleTolerance = 0.6;
-                        tessellation.CurveChordTolerance = 1;
-                        tessellation.SurfacePlaneAngleTolerance = 0.6;
-                        tessellation.SurfacePlaneTolerance = 1;
+                            tessellation.Tessellate();
 
-                        tessellation.Tessellate();
+                            var bodyTessellation = GetBodyMesh(body, partDoc, tessellation, modelDoc.Item3);
 
-                        var bodyTessellation = new BodyTessellation();
+                            totalTessellation.Meshes.Add(bodyTessellation);
 
-                        double[] bodyColorArray = null;
-                        var features = (object[])body.GetFeatures();
-                        if (features != null) {
-                            foreach (IFeature feature in features.Reverse()) {
-                                bodyColorArray = (double[])feature.GetMaterialPropertyValues2((int)swInConfigurationOpts_e.swThisConfiguration, null);
-                                if (bodyColorArray[0] == -1) // All -1s are returned by features that don't assign color.
-                                    bodyColorArray = null; 
-
-                                if (bodyColorArray != null)
-                                    break;
-                            }
-                        }
-
-                        if (bodyColorArray == null)
-                            bodyColorArray = (double[])body.MaterialPropertyValues2;
-
-                        if (bodyColorArray == null)
-                            bodyColorArray = (double[])partDoc.MaterialPropertyValues;
-
-                        var bodyColor = ((long)(bodyColorArray[0] * 255) << 16) | ((long)(bodyColorArray[1] * 255) << 8) | ((long)(bodyColorArray[2] * 255));
-
-                        bodyTessellation.FaceColors.Add(bodyColor);
-
-                        var coloredFaces = new Dictionary<IFace2, long>();
-                        var faceCount = 0;
-                        foreach (IFace2 face in (object[])body.GetFaces()) {
-                            faceCount++;
-                            var colorArray = (double[])face.MaterialPropertyValues;
-                            if (colorArray != null)
-                                coloredFaces[face] = ((long)(colorArray[0] * 255) << 16) |
-                                                     ((long)(colorArray[1] * 255) << 8) |
-                                                     ((long)(colorArray[2] * 255));
-                        }
-
-                        if (coloredFaces.Count < faceCount) {
-                            for (var i = 0; i < tessellation.GetVertexCount(); i++) {
-                                bodyTessellation.VertexPositions.Add((double[])tessellation.GetVertexPoint(i));
-                                bodyTessellation.VertexNormals.Add((double[])tessellation.GetVertexNormal(i));
-                            }
-
-                            foreach (IFace2 face in (object[])body.GetFaces()) {
-                                if (coloredFaces.ContainsKey(face))
-                                    continue;
-
-                                foreach (var facet in (int[])tessellation.GetFaceFacets(face)) {
-                                    var vertexIndices = new List<int>();
-                                    foreach (var fin in (int[])tessellation.GetFacetFins(facet)) {
-                                        vertexIndices.Add(((int[])tessellation.GetFinVertices(fin))[0]);
-                                    }
-
-                                    bodyTessellation.Faces.Add(new FaceStruct {
-                                        Color = 0,
-                                        Vertex1 = vertexIndices[0],
-                                        Vertex2 = vertexIndices[1],
-                                        Vertex3 = vertexIndices[2],
+                            var edges = (object[]) body.GetEdges();
+                            if (edges != null) {
+                                foreach (var edge in edges) {
+                                    var polyline = GetEdgePolyline(tessellation, edge);
+                                    totalTessellation.Lines.Add(new BodyTessellation {
+                                        VertexPositions = new List<double[]>(polyline.Select(v => (double[]) tessellation.GetVertexPoint(v)))
                                     });
                                 }
-                            }
-                        }
-
-                        foreach (var pair in coloredFaces) {
-                            var colorIndex = bodyTessellation.FaceColors.IndexOf(pair.Value);
-                            if (colorIndex == -1) {
-                                bodyTessellation.FaceColors.Add(pair.Value);
-                                colorIndex = bodyTessellation.FaceColors.Count - 1;
-                            }
-
-                            foreach (var facet in (int[])tessellation.GetFaceFacets(pair.Key)) {
-                                var vertexIndices = new List<int>();
-                                foreach (var fin in (int[])tessellation.GetFacetFins(facet)) {
-                                    vertexIndices.Add(((int[])tessellation.GetFinVertices(fin))[0]);
-                                }
-
-                                bodyTessellation.Faces.Add(
-                                    new FaceStruct {
-                                        Color = colorIndex,
-                                        Vertex1 = bodyTessellation.VertexPositions.Count,
-                                        Vertex2 = bodyTessellation.VertexPositions.Count + 1,
-                                        Vertex3 = bodyTessellation.VertexPositions.Count + 2
-                                    });
-
-                                bodyTessellation.VertexPositions.Add((double[])tessellation.GetVertexPoint(vertexIndices[0]));
-                                bodyTessellation.VertexPositions.Add((double[])tessellation.GetVertexPoint(vertexIndices[1]));
-                                bodyTessellation.VertexPositions.Add((double[])tessellation.GetVertexPoint(vertexIndices[2]));
-
-                                bodyTessellation.VertexNormals.Add((double[])tessellation.GetVertexNormal(vertexIndices[0]));
-                                bodyTessellation.VertexNormals.Add((double[])tessellation.GetVertexNormal(vertexIndices[1]));
-                                bodyTessellation.VertexNormals.Add((double[])tessellation.GetVertexNormal(vertexIndices[2]));
-                            }
-                        }
-
-                        totalTessellation.Meshes.Add(bodyTessellation);
-
-                        var edges = (object[])body.GetEdges();
-                        if (edges != null) {
-                            foreach (var edge in edges) {
-                                var polyline = GetEdgePolyline(tessellation, edge);
-                                totalTessellation.Lines.Add(new BodyTessellation { VertexPositions = new List<double[]>(polyline.Select(v => (double[])tessellation.GetVertexPoint(v))) });
                             }
                         }
                     }
@@ -378,6 +290,114 @@ namespace Voxel8SolidworksAddin {
             File.WriteAllText(fileName, result);
         }
 
+        private static BodyTessellation GetBodyMesh(IBody2 body, IPartDoc partDoc, ITessellation tessellation, long? overrideColor) {
+            var bodyTessellation = new BodyTessellation();
+
+            if (overrideColor.HasValue) {
+                bodyTessellation.FaceColors.Add(overrideColor.Value);
+            }
+            else {
+                double[] bodyColorArray = null;
+                var features = (object[]) body.GetFeatures();
+                if (features != null) {
+                    foreach (IFeature feature in features.Reverse()) {
+                        bodyColorArray =
+                            (double[]) feature.GetMaterialPropertyValues2(
+                                (int) swInConfigurationOpts_e.swThisConfiguration, null);
+                        if (bodyColorArray[0] == -1
+                        ) // All -1s are returned by features that don't assign color.
+                            bodyColorArray = null;
+
+                        if (bodyColorArray != null)
+                            break;
+                    }
+                }
+
+                if (bodyColorArray == null)
+                    bodyColorArray = (double[]) body.MaterialPropertyValues2;
+
+                if (bodyColorArray == null)
+                    bodyColorArray = (double[]) partDoc.MaterialPropertyValues;
+
+                var bodyColor = ColorArrayToColor(bodyColorArray);
+
+                bodyTessellation.FaceColors.Add(bodyColor);
+            }
+
+            var coloredFaces = new Dictionary<IFace2, long>();
+            var faceCount = 0;
+            foreach (IFace2 face in (object[]) body.GetFaces()) {
+                faceCount++;
+                var colorArray = (double[]) face.MaterialPropertyValues;
+                if (colorArray != null)
+                    coloredFaces[face] = ColorArrayToColor(colorArray);
+            }
+
+            if (coloredFaces.Count < faceCount) {
+                for (var i = 0; i < tessellation.GetVertexCount(); i++) {
+                    bodyTessellation.VertexPositions.Add((double[]) tessellation.GetVertexPoint(i));
+                    bodyTessellation.VertexNormals.Add((double[]) tessellation.GetVertexNormal(i));
+                }
+
+                foreach (IFace2 face in (object[]) body.GetFaces()) {
+                    if (coloredFaces.ContainsKey(face))
+                        continue;
+
+                    foreach (var facet in (int[]) tessellation.GetFaceFacets(face)) {
+                        var vertexIndices = new List<int>();
+                        foreach (var fin in (int[]) tessellation.GetFacetFins(facet)) {
+                            vertexIndices.Add(((int[]) tessellation.GetFinVertices(fin))[0]);
+                        }
+
+                        bodyTessellation.Faces.Add(new FaceStruct {
+                            Color = 0,
+                            Vertex1 = vertexIndices[0],
+                            Vertex2 = vertexIndices[1],
+                            Vertex3 = vertexIndices[2],
+                        });
+                    }
+                }
+            }
+
+            foreach (var pair in coloredFaces) {
+                var colorIndex = bodyTessellation.FaceColors.IndexOf(pair.Value);
+                if (colorIndex == -1) {
+                    bodyTessellation.FaceColors.Add(pair.Value);
+                    colorIndex = bodyTessellation.FaceColors.Count - 1;
+                }
+
+                foreach (var facet in (int[]) tessellation.GetFaceFacets(pair.Key)) {
+                    var vertexIndices = new List<int>();
+                    foreach (var fin in (int[]) tessellation.GetFacetFins(facet)) {
+                        vertexIndices.Add(((int[]) tessellation.GetFinVertices(fin))[0]);
+                    }
+
+                    bodyTessellation.Faces.Add(
+                        new FaceStruct {
+                            Color = colorIndex,
+                            Vertex1 = bodyTessellation.VertexPositions.Count,
+                            Vertex2 = bodyTessellation.VertexPositions.Count + 1,
+                            Vertex3 = bodyTessellation.VertexPositions.Count + 2
+                        });
+
+                    bodyTessellation.VertexPositions.Add(
+                        (double[]) tessellation.GetVertexPoint(vertexIndices[0]));
+                    bodyTessellation.VertexPositions.Add(
+                        (double[]) tessellation.GetVertexPoint(vertexIndices[1]));
+                    bodyTessellation.VertexPositions.Add(
+                        (double[]) tessellation.GetVertexPoint(vertexIndices[2]));
+
+                    bodyTessellation.VertexNormals.Add(
+                        (double[]) tessellation.GetVertexNormal(vertexIndices[0]));
+                    bodyTessellation.VertexNormals.Add(
+                        (double[]) tessellation.GetVertexNormal(vertexIndices[1]));
+                    bodyTessellation.VertexNormals.Add(
+                        (double[]) tessellation.GetVertexNormal(vertexIndices[2]));
+                }
+            }
+            return bodyTessellation;
+        }
+
         private static List<int> GetEdgePolyline(ITessellation tessellation, object edge) {
             var fins = (int[])tessellation.GetEdgeFins(edge);
 
@@ -446,15 +466,19 @@ namespace Voxel8SolidworksAddin {
             return polyline;
         }
 
-        Tuple<object, string> GetTuple(Component2 component) {
+        Tuple<object, string, long?> GetTuple(Component2 component) {
             var modelDoc = (IModelDoc2)component.GetModelDoc2();
 
             if (modelDoc is IAssemblyDoc)
-                return new Tuple<object, string>(component, component.ReferencedConfiguration);
-            return new Tuple<object, string>(modelDoc, component.ReferencedConfiguration);
+                return new Tuple<object, string, long?>(component, component.ReferencedConfiguration, null);
+
+            var componentColor = (double[]) component.GetMaterialPropertyValues2((int)swInConfigurationOpts_e.swThisConfiguration, null);
+            if (componentColor != null && componentColor[0] != -1)
+                return new Tuple<object, string, long?>(modelDoc, component.ReferencedConfiguration, ColorArrayToColor(componentColor));
+            return new Tuple<object, string, long?>(modelDoc, component.ReferencedConfiguration, null);
         }
 
-        void AddIds(Component2 component, Dictionary<Tuple<object, string>, int> ids, ref int id) {
+        void AddIds(Component2 component, Dictionary<Tuple<object, string, long?>, int> ids, ref int id) {
             if (component.IsHidden(true))
                 return;
 

@@ -238,8 +238,9 @@ namespace Voxel8SolidworksAddin {
 
                         var transformation = component.Transform2;
 
-                        if (assemblyDoc.Transform2 != null)
-                            transformation = (MathTransform) transformation.Multiply(assemblyDoc.Transform2.Inverse());
+                        var assemblyTransform = assemblyDoc.GetTotalTransform(true);
+                        if (assemblyTransform != null)
+                            transformation = (MathTransform) transformation.Multiply(assemblyTransform.Inverse());
 
                         var threeJsComponent = new ThreeJsComponent {
                             Id = id,

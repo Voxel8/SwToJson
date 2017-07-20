@@ -279,8 +279,8 @@ namespace Voxel8SolidworksAddin {
                 var spaceIndex = fileName.LastIndexOf(' ', searchEnd, searchEnd + 1);
                 if (spaceIndex == -1)
                     break;
-                if (fileName.Substring(spaceIndex + 1) ==
-                    fileName.Substring(spaceIndex - (fileName.Length - spaceIndex - 1), fileName.Length - spaceIndex - 1)) {
+                if (fileName.Substring(spaceIndex + 1).ToLowerInvariant() ==
+                    fileName.Substring(spaceIndex - (fileName.Length - spaceIndex - 1), fileName.Length - spaceIndex - 1).ToLowerInvariant()) {
                     fileName = fileName.Substring(0, spaceIndex);
                     break;
                 }
